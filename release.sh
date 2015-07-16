@@ -1,5 +1,10 @@
 #!/bin/bash
 
+function exec_command() {
+	echo "> $1"
+	$1
+}
+
 function die_with() {
 	echo "$*" >&2
 	exit 1
@@ -33,12 +38,18 @@ function die_without_command() {
 }
 
 function rollback_and_die_with() {
-	echo "$*" >&2
-	
+
+	#REALESE_VERSION=$1
+	#HEAD_BEFORE_RELEASE=$2
+	MSG=$3
+	echo "$MSG" >&2
+
+	echo "Deleting artifacts from Archiva in case they were deployed"
+	exec_command "mvn  lt.omnitel.maven.plugins:archiva-plugin:0.0.1-SNAPSHOT:deleteArtifacts -DversionToDelete=$RELEASE_VERSION"
+
 	echo "Resetting release commit to return you to the same working state as before attempting a deploy"
-	echo "> git reset --hard HEAD^1"
-	git reset --hard HEAD^1 || echo "Git reset command failed!"
-	
+	exec_command "git tag -d $VCS_RELEASE_TAG"
+	exec_command "git reset --hard $HEAD_BEFORE_RELEASE" || echo "Git reset command failed!"
 	exit 1
 }
 
@@ -172,6 +183,7 @@ echo ""
 echo "Using $RELEASE_VERSION for release"
 echo "Using $NEXT_VERSION for next development version"
 
+HEAD_BEFORE_RELEASE=$(git rev-parse HEAD)
 #############################
 # START THE RELEASE PROCESS #
 #############################
@@ -187,7 +199,7 @@ fi
 $MVN versions:set -DgenerateBackupPoms=false -DnewVersion=$RELEASE_VERSION || die_with "Failed to set release version on pom.xml files"
 
 # Commit the updated pom.xml files
-git commit -a -m "Release version ${RELEASE_VERSION}" || die_with "Failed to commit updated pom.xml versions for release!"
+git commit -a -m "Release version ${RELEASE_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for release!"
 
 echo ""
 echo " Starting build and deploy"
@@ -198,15 +210,15 @@ echo ""
 $MVN -DperformRelease=true clean deploy || rollback_and_die_with "Build/Deploy failure. Release failed."
 
 # tag the release (N.B. should this be before perform the release?)
-git tag "v${RELEASE_VERSION}" || die_with "Failed to create tag ${RELEASE_VERSION}! Release has been deployed, however"
+git tag "v${RELEASE_VERSION}" || rollback_and_die_with "Failed to create tag ${RELEASE_VERSION}! Release has been deployed, however"
 
 ######################################
 # START THE NEXT DEVELOPMENT PROCESS #
 ######################################
 
-$MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || die_with "Failed to set next dev version on pom.xml files, please do this manually"
+$MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || rollback_and_die_with "Failed to set next dev version on pom.xml files, please do this manually"
 
-git commit -a -m "Start next development version ${NEXT_VERSION}" || die_with "Failed to commit updated pom.xml versions for next dev version! Please do this manually"
+git commit -a -m "Start next development version ${NEXT_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for next dev version! Please do this manually"
 
 git push || die_with "Failed to push commits. Please do this manually"
 git push --tags || die_with "Failed to push tags. Please do this manually"
