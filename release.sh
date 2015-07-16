@@ -87,9 +87,9 @@ function usage() {
 	echoc "  -a    Shorthand for -a auto -n auto"
 	echoc "  -r    Sets the release version number to use ('auto' to use the version in pom.xml)"
 	echoc "  -n    Sets the next development version number to use (or 'auto' to increment release version)"
-	echoc "  -mr   Sets the version in release branch"
+	echoc "  -m    Sets the version in release branch"
 	echoc "  -c    Assume this as pom.xml version without inspecting it with xmllint"
-	echoc "  -bgf  Assume simple release of bugfix version"
+	echoc "  -b    Assume simple release of bugfix version"
 	echoc ""
 	echoc "  -h    For this message"
 	echoc ""
@@ -99,7 +99,8 @@ function usage() {
 # HANDLE COMMAND-LINE OPTIONS #
 ###############################
 
-while getopts "ahr:n:c:" o; do
+BUGFIX_RELEASE=false
+while getopts "ahbr:n:c:m:" o; do
 	case "${o}" in
 		a)
 			RELEASE_VERSION="auto"
@@ -115,10 +116,11 @@ while getopts "ahr:n:c:" o; do
 		c)
 			CURRENT_VERSION="${OPTARG}"
 			;;
-		mr)
+		m)
 		    NEXT_VERSION_RELEASE_BRANCH="${OPTARG}"
 			;;
-		bgf)BUGFIX_RELEASE=true
+		b)
+		    BUGFIX_RELEASE=true
 		 	;;
 		h)
 			usage
@@ -205,7 +207,7 @@ function get_next_major_version() {
 		die_with "Release version and next version are the same version!"
 	fi
 }
-get_next_major_version
+$BUGFIX_RELEASE || get_next_major_version
 
 #Promot for next version in release branch
 function get_next_release_branch_version() {
@@ -226,24 +228,31 @@ function get_next_release_branch_version() {
 	fi
 }
 get_next_release_branch_version
+if [ "$BUGFIX_RELEASE"=true ]; then
+	NEXT_VERSION=$NEXT_VERSION_RELEASE_BRANCH
+fi
 
 echoc ""
 echoc "Using $RELEASE_VERSION for release"
-echoc "Using $NEXT_VERSION for next development version"
+$BUGFIX_RELEASE || echoc "Using $NEXT_VERSION for next development version"
 echoc "Using $NEXT_VERSION_RELEASE_BRANCH for next development version in branch"
 
 STARTING_BRANCH=$(git symbolic-ref --short -q HEAD)
 HEAD_BEFORE_RELEASE=$(git rev-parse HEAD)
 VCS_RELEASE_TAG="${RELEASE_VERSION}"
-RELEASE_BRANCH="release-$RELEASE_VERSION"
+if [ "$BUGFIX_RELEASE"=true ]; then
+	RELEASE_BRANCH="release-$RELEASE_VERSION"
+fi
 
-#TODO validate that release branch and current matches for minor release
-
-function validate_release() {
+function validate_tag() {
 	# Check that tag and release branch doesn't exist
 	if [ $(git tag -l "${VCS_RELEASE_TAG}" | wc -l) != "0" ] ; then
 		die_with "A tag already exists ${VCS_RELEASE_TAG} for the release version ${RELEASE_VERSION}"
 	fi
+}
+validate_tag
+
+function validate_release_branch() {
 	if [ $(git branch --list "${RELEASE_BRANCH}" | wc -l) != "0" ] ; then
 		die_with "A release branch already exists ${RELEASE_BRANCH} for the release version ${RELEASE_VERSION}"
 	fi
@@ -251,7 +260,7 @@ function validate_release() {
 	# Check that poms are OK. E.g. doesn't contain SNAPSHOT versions.
 	check_release_mvn_plugin
 }
-validate_release
+$BUGFIX_RELEASE || validate_release_branch
 
 function perform_release() {
 	# Update the pom.xml versions
@@ -282,7 +291,7 @@ function create_release_branch() {
 	git commit -a -m "Prepare release branch for bug-fix development. Bumping version to $NEXT_VERSION_RELEASE_BRANCH."
 	git checkout $STARTING_BRANCH
 }
-create_release_branch
+$BUGFIX_RELEASE || create_release_branch
 
 function prepare_for_next_development_process() {
 	$MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || rollback_and_die_with "Failed to set next dev version on pom.xml files, please do this manually"
@@ -296,7 +305,7 @@ function push_release_branch() {
 	git push origin $RELEASE_BRANCH || die_with "Failed to push commits from $RELEASE_BRANCH. Please do this manually"
 	git checkout $STARTING_BRANCH
 }
-push_release_branch
+$BUGFIX_RELEASE || push_release_branch
 
 function push_current_branch() {
 	git push origin $STARTING_BRANCH || die_with "Failed to push commits. Please do this manually"
