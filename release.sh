@@ -240,7 +240,7 @@ echoc "Using $NEXT_VERSION_RELEASE_BRANCH for next development version in branch
 STARTING_BRANCH=$(git symbolic-ref --short -q HEAD)
 HEAD_BEFORE_RELEASE=$(git rev-parse HEAD)
 VCS_RELEASE_TAG="${RELEASE_VERSION}"
-if [ "$BUGFIX_RELEASE"=true ]; then
+if [ "$BUGFIX_RELEASE"=false ]; then
 	RELEASE_BRANCH="release-$RELEASE_VERSION"
 fi
 
