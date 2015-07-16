@@ -2,8 +2,8 @@
 
 function check_release_mvn_plugin() {
 	# validate release using maven-release-plugin
-	$MVN -DdryRun=true -B release:prepare || rollback_and_die_with "release:prepare reports errors. See output for details"
-    $MVN -B release:clean
+	$MVN -DdryRun=true -B org.apache.maven.plugins:maven-release-plugin:2.3.2:prepare || rollback_and_die_with "release:prepare reports errors. See output for details"
+    $MVN -B org.apache.maven.plugins:maven-release-plugin:2.3.2:clean
 }
 
 function echoc() {
@@ -58,7 +58,7 @@ function rollback_and_die_with() {
 	echoc "$MSG" >&2
 
 	echoc "Deleting artifacts from Archiva in case they were deployed"
-	exec_command "mvn  lt.omnitel.maven.plugins:archiva-plugin:0.0.1-SNAPSHOT:deleteArtifacts -DversionToDelete=$RELEASE_VERSION"
+	exec_command "mvn lt.omnitel.maven.plugins:archiva-plugin:0.0.1-SNAPSHOT:deleteArtifacts -DversionToDelete=$RELEASE_VERSION"
 
 	echoc "Resetting release commit to return you to the same working state as before attempting a deploy"
 
@@ -71,7 +71,7 @@ function rollback_and_die_with() {
 	fi
 	exec_command "git reset --hard $HEAD_BEFORE_RELEASE" || echoc "Git reset command failed!"
 
-	exec_command "$MVN -B release:clean" || echoc "Unable to clean up release:perform artifacts"
+	exec_command "$MVN -B org.apache.maven.plugins:maven-release-plugin:2.3.2:clean" || echoc "Unable to clean up release:perform artifacts"
 
 	echoc "Release failed. Changes have been rolled back. See output for details."
 	exit 1
@@ -81,7 +81,7 @@ function usage() {
 	echoc "Maven git release script v1.0 (c) 2014 Peter Wright"
 	echoc ""
 	echoc "Usage:"
-	echoc "  $0 [-a | [ -r RELEASE_VERSION ] [ -n NEXT_DEV_VERSION ] ]  [ -c ASSUMED_POM_VERSION ] [ -s ]"
+	echoc "  $0 [-a -b | [ -r RELEASE_VERSION ] [ -n NEXT_DEV_VERSION ] ]  [ -c ASSUMED_POM_VERSION ] [ -m NEXT_REL_BRANCH_VERSION ]"
 	echoc "Updates release version, then builds and commits it"
 	echoc ""
 	echoc "  -a    Shorthand for -a auto -n auto"
