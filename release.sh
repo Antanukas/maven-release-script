@@ -1,6 +1,6 @@
 #!/bin/bash
 
-function check_release() {
+function check_release_mvn_plugin() {
 	# validate release using maven-release-plugin
 	$MVN -DdryRun=true -B release:prepare || rollback_and_die_with "release:prepare reports errors. See output for details"
     $MVN -B release:clean
@@ -89,6 +89,7 @@ function usage() {
 	echoc "  -n    Sets the next development version number to use (or 'auto' to increment release version)"
 	echoc "  -mr   Sets the version in release branch"
 	echoc "  -c    Assume this as pom.xml version without inspecting it with xmllint"
+	echoc "  -bgf  Assume simple release of bugfix version"
 	echoc ""
 	echoc "  -h    For this message"
 	echoc ""
@@ -117,6 +118,8 @@ while getopts "ahr:n:c:" o; do
 		mr)
 		    NEXT_VERSION_RELEASE_BRANCH="${OPTARG}"
 			;;
+		bgf)BUGFIX_RELEASE=true
+		 	;;
 		h)
 			usage
 			exit 0
@@ -129,99 +132,100 @@ while getopts "ahr:n:c:" o; do
 done
 shift $((OPTIND-1))
 
-###############################################
-# MAKE SURE SCRIPT DEPENDENCIES ARE INSTALLED #
-###############################################
+function check_script_dependencies() {
+	die_without_command git perl wc
 
-die_without_command git perl wc
+	if [ -z "$MVN" ] ; then
+		die_without_command mvn
+		MVN=mvn
+	else
+		die_without_command $MVN
+	fi
 
-if [ -z "$MVN" ] ; then
-	die_without_command mvn
-	MVN=mvn
-else
-	die_without_command $MVN
-fi
+	echoc "Using maven command: $MVN"
+}
+check_script_dependencies
 
-echoc "Using maven command: $MVN"
+function check_git_state() {
+	# If there are any uncommitted changes we must abort immediately
+	if [ $(git status -s | wc -l) != "0" ] ; then
+		git status -s
+		die_with "There are uncommitted changes, please commit or stash them to continue with the release:"
+	else
+		echoc "Good, no uncommitted changes found"
+	fi
+}
+check_git_state
 
+function get_release_version_number() {
+	if [ -z "$CURRENT_VERSION" ] ; then
+		# Extract the current version (requires xmlllint with xpath suport)
+		die_unless_xmllint_has_xpath
+		CURRENT_VERSION=$(xmllint --xpath "/*[local-name() = 'project']/*[local-name() = 'version']/text()" pom.xml)
+	fi
 
-#########################################
-# BAIL IF GIT STATE INCORRECT #
-#########################################
+	echoc "Current pom.xml version: $CURRENT_VERSION"
+	echoc ""
 
-# If there are any uncommitted changes we must abort immediately
-if [ $(git status -s | wc -l) != "0" ] ; then
-	git status -s
-	die_with "There are uncommitted changes, please commit or stash them to continue with the release:"
-else
-	echoc "Good, no uncommitted changes found"
-fi
-
-#################################################################
-# FIGURE OUT RELEASE VERSION NUMBER AND NEXT DEV VERSION NUMBER #
-#################################################################
-
-if [ -z "$CURRENT_VERSION" ] ; then
-	# Extract the current version (requires xmlllint with xpath suport)
-	die_unless_xmllint_has_xpath
-	CURRENT_VERSION=$(xmllint --xpath "/*[local-name() = 'project']/*[local-name() = 'version']/text()" pom.xml)
-fi
-
-echoc "Current pom.xml version: $CURRENT_VERSION"
-echoc ""
-
-# Prompt for release version (or compute it automatically if requested)
-RELEASE_VERSION_DEFAULT=$(echo "$CURRENT_VERSION" | perl -pe 's/-SNAPSHOT//')
-if [ -z "$RELEASE_VERSION" ] ; then
-	read -p "Version to release [${RELEASE_VERSION_DEFAULT}]" RELEASE_VERSION
-		
+	# Prompt for release version (or compute it automatically if requested)
+	RELEASE_VERSION_DEFAULT=$(echo "$CURRENT_VERSION" | perl -pe 's/-SNAPSHOT//')
 	if [ -z "$RELEASE_VERSION" ] ; then
+		read -p "Version to release [${RELEASE_VERSION_DEFAULT}]" RELEASE_VERSION
+
+		if [ -z "$RELEASE_VERSION" ] ; then
+			RELEASE_VERSION=$RELEASE_VERSION_DEFAULT
+		fi
+	elif [ "$RELEASE_VERSION" = "auto" ] ; then
 		RELEASE_VERSION=$RELEASE_VERSION_DEFAULT
 	fi
-elif [ "$RELEASE_VERSION" = "auto" ] ; then
-	RELEASE_VERSION=$RELEASE_VERSION_DEFAULT
-fi
 
-if [ "$RELEASE_VERSION" = "$CURRENT_VERSION" ] ; then
-	die_with "Release version requested is exactly the same as the current pom.xml version (${CURRENT_VERSION})! Is the version in pom.xml definitely a -SNAPSHOT version?"
-fi
+	if [ "$RELEASE_VERSION" = "$CURRENT_VERSION" ] ; then
+		die_with "Release version requested is exactly the same as the current pom.xml version (${CURRENT_VERSION})! Is the version in pom.xml definitely a -SNAPSHOT version?"
+	fi
+}
+get_release_version_number
 
-
-# Prompt for next version (or compute it automatically if requested)
-NEXT_VERSION_DEFAULT=$(echo "$RELEASE_VERSION" | perl -pe 's{^(([0-9]\.)+)?([0-9]+)(\.[0-9]+)$}{$1 . ($3 + 1) . $4}e')
-if [ -z "$NEXT_VERSION" ] ; then
-	read -p "Next snapshot version [${NEXT_VERSION_DEFAULT}]" NEXT_VERSION
-	
+function get_next_major_version() {
+	# Prompt for next version (or compute it automatically if requested)
+	NEXT_VERSION_DEFAULT=$(echo "$RELEASE_VERSION" | perl -pe 's{^(([0-9]\.)+)?([0-9]+)(\.[0-9]+)$}{$1 . ($3 + 1) . $4}e')
 	if [ -z "$NEXT_VERSION" ] ; then
+		read -p "Next snapshot version [${NEXT_VERSION_DEFAULT}]" NEXT_VERSION
+
+		if [ -z "$NEXT_VERSION" ] ; then
+			NEXT_VERSION=$NEXT_VERSION_DEFAULT
+		fi
+	elif [ "$NEXT_VERSION" = "auto" ] ; then
 		NEXT_VERSION=$NEXT_VERSION_DEFAULT
 	fi
-elif [ "$NEXT_VERSION" = "auto" ] ; then
-	NEXT_VERSION=$NEXT_VERSION_DEFAULT
-fi
 
-# Add -SNAPSHOT to the end (and make sure we don't accidentally have it twice)
-NEXT_VERSION=$(append_snapshot $NEXT_VERSION)
+	# Add -SNAPSHOT to the end (and make sure we don't accidentally have it twice)
+	NEXT_VERSION=$(append_snapshot $NEXT_VERSION)
 
-if [ "$NEXT_VERSION" = "${RELEASE_VERSION}-SNAPSHOT" ] ; then
-	die_with "Release version and next version are the same version!"
-fi
+	if [ "$NEXT_VERSION" = "${RELEASE_VERSION}-SNAPSHOT" ] ; then
+		die_with "Release version and next version are the same version!"
+	fi
+}
+get_next_major_version
 
 #Promot for next version in release branch
-NEXT_VERSION_RELEASE_BRANCH_DEFAULT=$(echo "$RELEASE_VERSION" | perl -pe 's{^(([0-9]\.)+)?([0-9]+)$}{$1 . ($3 + 1)}e')
-if [ -z "$NEXT_VERSION_RELEASE_BRANCH" ] ; then
-	read -p "Next snapshot version in release branch [${NEXT_VERSION_RELEASE_BRANCH_DEFAULT}]" $NEXT_VERSION_RELEASE_BRANCH
-
+function get_next_release_branch_version() {
+	NEXT_VERSION_RELEASE_BRANCH_DEFAULT=$(echo "$RELEASE_VERSION" | perl -pe 's{^(([0-9]\.)+)?([0-9]+)$}{$1 . ($3 + 1)}e')
 	if [ -z "$NEXT_VERSION_RELEASE_BRANCH" ] ; then
+		read -p "Next snapshot version in release branch [${NEXT_VERSION_RELEASE_BRANCH_DEFAULT}]" $NEXT_VERSION_RELEASE_BRANCH
+
+		if [ -z "$NEXT_VERSION_RELEASE_BRANCH" ] ; then
+			NEXT_VERSION_RELEASE_BRANCH=$NEXT_VERSION_RELEASE_BRANCH_DEFAULT
+		fi
+	elif [ "$NEXT_VERSION_RELEASE_BRANCH" = "auto" ] ; then
 		NEXT_VERSION_RELEASE_BRANCH=$NEXT_VERSION_RELEASE_BRANCH_DEFAULT
 	fi
-elif [ "$NEXT_VERSION_RELEASE_BRANCH" = "auto" ] ; then
-	NEXT_VERSION_RELEASE_BRANCH=$NEXT_VERSION_RELEASE_BRANCH_DEFAULT
-fi
 
-NEXT_VERSION_RELEASE_BRANCH=$(append_snapshot $NEXT_VERSION_RELEASE_BRANCH)
-if [ "NEXT_VERSION_RELEASE_BRANCH" = "${RELEASE_VERSION}-SNAPSHOT" ] ; then
-	die_with "Release version in branch and next version are the same version!"
-fi
+	NEXT_VERSION_RELEASE_BRANCH=$(append_snapshot $NEXT_VERSION_RELEASE_BRANCH)
+	if [ "NEXT_VERSION_RELEASE_BRANCH" = "${RELEASE_VERSION}-SNAPSHOT" ] ; then
+		die_with "Release version in branch and next version are the same version!"
+	fi
+}
+get_next_release_branch_version
 
 echoc ""
 echoc "Using $RELEASE_VERSION for release"
@@ -233,66 +237,69 @@ HEAD_BEFORE_RELEASE=$(git rev-parse HEAD)
 VCS_RELEASE_TAG="${RELEASE_VERSION}"
 RELEASE_BRANCH="release-$RELEASE_VERSION"
 
-#############################
-# START THE RELEASE PROCESS #
-#############################
+#TODO validate that release branch and current matches for minor release
+
+function validate_release() {
+	# Check that tag and release branch doesn't exist
+	if [ $(git tag -l "${VCS_RELEASE_TAG}" | wc -l) != "0" ] ; then
+		die_with "A tag already exists ${VCS_RELEASE_TAG} for the release version ${RELEASE_VERSION}"
+	fi
+	if [ $(git branch --list "${RELEASE_BRANCH}" | wc -l) != "0" ] ; then
+		die_with "A release branch already exists ${RELEASE_BRANCH} for the release version ${RELEASE_VERSION}"
+	fi
+
+	# Check that poms are OK. E.g. doesn't contain SNAPSHOT versions.
+	check_release_mvn_plugin
+}
+validate_release
+
+function perform_release() {
+	# Update the pom.xml versions
+	$MVN versions:set -DgenerateBackupPoms=false -DnewVersion=$RELEASE_VERSION || die_with "Failed to set release version on pom.xml files"
+
+	# Commit the updated pom.xml files
+	git commit -a -m "Release version ${RELEASE_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for release!"
+
+	echoc ""
+	echoc " Starting build and deploy"
+	echoc ""
 
 
-# Check that tag and release branch doesn't exist
-if [ $(git tag -l "${VCS_RELEASE_TAG}" | wc -l) != "0" ] ; then
-	die_with "A tag already exists ${VCS_RELEASE_TAG} for the release version ${RELEASE_VERSION}"
-fi
-if [ $(git branch --list "${RELEASE_BRANCH}" | wc -l) != "0" ] ; then
-	die_with "A release branch already exists ${RELEASE_BRANCH} for the release version ${RELEASE_VERSION}"
-fi
+	# build and deploy the release
+	$MVN -DperformRelease=true clean deploy || rollback_and_die_with "Build/Deploy failure. Release failed."
 
-# Check that poms are OK. E.g. doesn't contain SNAPSHOT versions.
-check_release
+	# tag the release (N.B. should this be before perform the release?)
+	git tag "${VCS_RELEASE_TAG}" || rollback_and_die_with "Failed to create tag ${RELEASE_VERSION}! Release has been deployed, however"
+}
+perform_release
 
-# Update the pom.xml versions
-$MVN versions:set -DgenerateBackupPoms=false -DnewVersion=$RELEASE_VERSION || die_with "Failed to set release version on pom.xml files"
+function create_release_branch() {
+	git checkout -b $RELEASE_BRANCH || rollback_and_die_with "Can not create realease branch $RELEASE_BRANCH"
 
-# Commit the updated pom.xml files
-git commit -a -m "Release version ${RELEASE_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for release!"
+	mvn versions:set -f pom.xml -DnewVersion=$NEXT_VERSION_RELEASE_BRANCH || rollback_and_die_with "Can't update pom version to $NEXT_VERSION_RELEASE_BRANCH"
+	mvn versions:commit -f pom.xml || rollback_and_die_with "Can't commit $NEXT_VERSION_RELEASE_BRANCH pom.xml"
 
-echoc ""
-echoc " Starting build and deploy"
-echoc ""
+	git commit -a -m "Prepare release branch for bug-fix development. Bumping version to $NEXT_VERSION_RELEASE_BRANCH."
+	git checkout $STARTING_BRANCH
+}
+create_release_branch
 
+function prepare_for_next_development_process() {
+	$MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || rollback_and_die_with "Failed to set next dev version on pom.xml files, please do this manually"
 
-# build and deploy the release
-$MVN -DperformRelease=true clean deploy || rollback_and_die_with "Build/Deploy failure. Release failed."
+	git commit -a -m "Start next development version ${NEXT_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for next dev version! Please do this manually"
+}
+prepare_for_next_development_process
 
-# tag the release (N.B. should this be before perform the release?)
-git tag "${VCS_RELEASE_TAG}" || rollback_and_die_with "Failed to create tag ${RELEASE_VERSION}! Release has been deployed, however"
+function push_release_branch() {
+	git checkout $RELEASE_BRANCH
+	git push origin $RELEASE_BRANCH || die_with "Failed to push commits from $RELEASE_BRANCH. Please do this manually"
+	git checkout $STARTING_BRANCH
+}
+push_release_branch
 
-#########################
-# CREATE RELEASE BRANCH #
-#########################
-
-git checkout -b $RELEASE_BRANCH || rollback_and_die_with "Can not create realease branch $RELEASE_BRANCH"
-
-mvn versions:set -f pom.xml -DnewVersion=$NEXT_VERSION_RELEASE_BRANCH || rollback_and_die_with "Can't update pom version to $NEXT_VERSION_RELEASE_BRANCH"
-mvn versions:commit -f pom.xml || rollback_and_die_with "Can't commit $NEXT_VERSION_RELEASE_BRANCH pom.xml"
-
-git commit -a -m "Prepare release branch for bug-fix development. Bumping version to $NEXT_VERSION_RELEASE_BRANCH."
-git checkout $STARTING_BRANCH
-
-
-######################################
-# START THE NEXT DEVELOPMENT PROCESS #
-######################################
-
-$MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || rollback_and_die_with "Failed to set next dev version on pom.xml files, please do this manually"
-
-git commit -a -m "Start next development version ${NEXT_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for next dev version! Please do this manually"
-
-#############################
-# PUSHING EVERYTHING TO GIT #
-#############################
-
-git checkout $RELEASE_BRANCH
-git push origin $RELEASE_BRANCH || die_with "Failed to push commits from $RELEASE_BRANCH. Please do this manually"
-git checkout $STARTING_BRANCH
-git push origin $STARTING_BRANCH || die_with "Failed to push commits. Please do this manually"
-git push --tags || die_with "Failed to push tags. Please do this manually"
+function push_current_branch() {
+	git push origin $STARTING_BRANCH || die_with "Failed to push commits. Please do this manually"
+	git push --tags || die_with "Failed to push tags. Please do this manually"
+}
+push_current_branch
