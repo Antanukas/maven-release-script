@@ -1,12 +1,18 @@
 #!/bin/bash
 
+function check_release() {
+	# validate release using maven-release-plugin
+	$MVN -DdryRun=true -B release:prepare || rollback_and_die_with "release:prepare reports errors. See output for details"
+    $MVN -B release:clean
+}
+
 function echoc() {
     printf "\033[0;32m$1\033[0m\n"
 }
 
 function exec_command() {
 	echoc "> $1"
-	$1
+	$1 > /dev/null
 }
 
 function append_snapshot() {
@@ -64,6 +70,10 @@ function rollback_and_die_with() {
 		exec_command "git tag -d $VCS_RELEASE_TAG" || echoc "Could not delete tag"
 	fi
 	exec_command "git reset --hard $HEAD_BEFORE_RELEASE" || echoc "Git reset command failed!"
+
+	exec_command "$MVN -B release:clean" || echoc "Unable to clean up release:perform artifacts"
+
+	echoc "Release failed. Changes have been rolled back. See output for details."
 	exit 1
 }
 
@@ -228,13 +238,16 @@ RELEASE_BRANCH="release-$RELEASE_VERSION"
 #############################
 
 
-# check that tag and release branch doesn't exist
+# Check that tag and release branch doesn't exist
 if [ $(git tag -l "${VCS_RELEASE_TAG}" | wc -l) != "0" ] ; then
 	die_with "A tag already exists ${VCS_RELEASE_TAG} for the release version ${RELEASE_VERSION}"
 fi
 if [ $(git branch --list "${RELEASE_BRANCH}" | wc -l) != "0" ] ; then
 	die_with "A release branch already exists ${RELEASE_BRANCH} for the release version ${RELEASE_VERSION}"
 fi
+
+# Check that poms are OK. E.g. doesn't contain SNAPSHOT versions.
+check_release
 
 # Update the pom.xml versions
 $MVN versions:set -DgenerateBackupPoms=false -DnewVersion=$RELEASE_VERSION || die_with "Failed to set release version on pom.xml files"
@@ -274,8 +287,12 @@ $MVN versions:set -DgenerateBackupPoms=false "-DnewVersion=${NEXT_VERSION}" || r
 
 git commit -a -m "Start next development version ${NEXT_VERSION}" || rollback_and_die_with "Failed to commit updated pom.xml versions for next dev version! Please do this manually"
 
+#############################
+# PUSHING EVERYTHING TO GIT #
+#############################
+
 git checkout $RELEASE_BRANCH
-git push || die_with "Failed to push commits from $RELEASE_BRANCH. Please do this manually"
+git push origin $RELEASE_BRANCH || die_with "Failed to push commits from $RELEASE_BRANCH. Please do this manually"
 git checkout $STARTING_BRANCH
-git push || die_with "Failed to push commits. Please do this manually"
+git push origin $STARTING_BRANCH || die_with "Failed to push commits. Please do this manually"
 git push --tags || die_with "Failed to push tags. Please do this manually"
